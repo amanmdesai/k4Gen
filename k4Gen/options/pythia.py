@@ -1,28 +1,41 @@
-"""
-Pythia8, integrated in the FCCSW framework.
-
-Generates according to a pythia .cmd file and saves them in fcc edm format.
-
-"""
+# Based on key4hep's k4Gen pythia.py example; FLARE overrides --Pythia8.PythiaInterface.pythiacard/--out.filename and never passes -n (it sets EvtMax directly and -1 hangs a generator), reading the event count from the card itself instead.
 
 import os
+import sys
 from GaudiKernel import SystemOfUnits as units
 from Gaudi.Configuration import *
-from edm4hep import labels as e4_labels
 
-from Configurables import EventDataSvc
-from k4FWCore import ApplicationMgr, IOSvc
+
+def _cli_override(flag, argv, default=None):
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if token.startswith(flag + "="):
+            return token.split("=", 1)[1]
+    return default
+
+
+def read_num_events_from_card(card_path, default=2):
+    try:
+        with open(card_path) as f:
+            for line in f:
+                line = line.split("!", 1)[0].strip()
+                if line.lower().startswith("main:numberofevents"):
+                    return int(line.split("=", 1)[1].strip())
+    except (OSError, ValueError, IndexError):
+        pass
+    return default
+
+
+from Configurables import ApplicationMgr
 ApplicationMgr().EvtSel = 'NONE'
-ApplicationMgr().EvtMax = 2
 ApplicationMgr().OutputLevel = INFO
-ApplicationMgr().ExtSvc += ["RndmGenSvc", EventDataSvc("EventDataSvc")]
+ApplicationMgr().ExtSvc +=["RndmGenSvc"]
 
-from Configurables import EventHeaderCreator
-eventHeaderCreator = EventHeaderCreator(
-    "eventHeaderCreator", runNumber=42, eventNumberOffset=42
-)
-ApplicationMgr().TopAlg += [eventHeaderCreator]
-
+#### Data service
+from Configurables import k4DataSvc
+podioevent = k4DataSvc("EventDataSvc")
+ApplicationMgr().ExtSvc += [podioevent]
 
 from Configurables import GaussSmearVertex
 smeartool = GaussSmearVertex()
@@ -40,6 +53,10 @@ pythiafilename = "Pythia_standard.cmd"
 pythiafile = os.path.join(path_to_pythiafile, pythiafilename)
 # Example of pythia configuration file to read LH event file
 #pythiafile="options/Pythia_LHEinput.cmd"
+pythiafile = _cli_override(
+    "--Pythia8.PythiaInterface.pythiacard", sys.argv, default=pythiafile
+)
+ApplicationMgr().EvtMax = read_num_events_from_card(pythiafile)
 pythia8gentool.pythiacard = pythiafile
 pythia8gentool.doEvtGenDecays = False
 pythia8gentool.printPythiaStatistics = True
@@ -52,25 +69,15 @@ pythia8gen.VertexSmearingTool = smeartool
 pythia8gen.hepmc.Path = "hepmc"
 ApplicationMgr().TopAlg += [pythia8gen]
 
-### Reads an HepMC::GenEvent from the data service and writes a collection of EDM Particles
+# Filters to status-1 particles at conversion time into a single self-contained "MCParticles" collection; a separate GenParticleFilter step left dangling cross-collection parent refs that crashed Geant4's reader.
 from Configurables import HepMCToEDMConverter
 hepmc_converter = HepMCToEDMConverter()
 hepmc_converter.hepmc.Path="hepmc"
-hepmc_converter.hepmcStatusList = [] # convert particles with all statuses
-hepmc_converter.GenParticles.Path=e4_labels.MCParticles
+hepmc_converter.hepmcStatusList = [1] # only convert final-state (stable) particles
+hepmc_converter.GenParticles.Path="MCParticles"
 ApplicationMgr().TopAlg += [hepmc_converter]
 
-### Filters generated particles
-# accept is a list of particle statuses that should be accepted
-from Configurables import GenParticleFilter
-genfilter = GenParticleFilter("StableParticles")
-genfilter.accept = [1]
-genfilter.GenParticles.Path = e4_labels.MCParticles
-genfilter.GenParticlesFiltered.Path = "MCParticlesStable"
-ApplicationMgr().TopAlg += [genfilter]
-
-iosvc = IOSvc()
-iosvc.Output = "output_pythia.root"
-iosvc.outputCommands = ["keep *"]
-
-
+from Configurables import PodioOutput
+out = PodioOutput("out")
+out.outputCommands = ["keep *"]
+ApplicationMgr().TopAlg += [out]
