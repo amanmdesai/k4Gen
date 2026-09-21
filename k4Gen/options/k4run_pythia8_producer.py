@@ -1,4 +1,5 @@
 # FLARE variant: event count read from the card, status-1 filtering in the converter.
+
 import os
 import sys
 from GaudiKernel import SystemOfUnits as units
